@@ -5,6 +5,8 @@ import pandas as pd
 from scipy.sparse import csr_matrix, vstack
 from scipy.io import mmread, mmwrite
 
+import subprocess
+
 import argparse
 import concurrent.futures
 from tqdm import tqdm
@@ -49,6 +51,10 @@ def get_con_counts(ad, dp, geno):
     ### 1|1
     elif '0' not in geno and '1' in geno:
         return ad
+    ### handles missing genotypes
+    ### as well as multiallelic SNPs
+    zeros = csr_matrix(np.zeros(dp.shape[1]))
+    return zeros
 
 def process_snp(ad, dp, genotypes):
   return get_con_counts(ad, dp, genotypes)
@@ -63,9 +69,14 @@ barcodes = pd.read_csv(f'{cellsnp_dir}/cellSNP.samples.tsv',
 # how do I detect this automatically?
 demux_cols = ['CHROM', 'POS', 'ID', 'REF', 'ALT',
               'QUAL', 'FILTER', 'INFO']
-geno_base_cols = ['CHROM', 'POS', 'ID', 'REF', 'ALT',
-                  'QUAL', 'FILTER', 'INFO', 'FORMAT']
-geno_cols = geno_base_cols + donors
+# geno_base_cols = ['CHROM', 'POS', 'ID', 'REF', 'ALT',
+#                   'QUAL', 'FILTER', 'INFO', 'FORMAT']
+# geno_cols = geno_base_cols + donors
+
+tmp_header = subprocess.run(f"zcat {vcf_path} | grep '#' | tail -1",
+        shell=True, capture_output=True, text=True)
+tmp_string = tmp_header.stdout
+geno_cols = tmp_string.replace('\n', '').split('\t')
 
 #
 demux_snps = pd.read_csv(f'{cellsnp_dir}/cellSNP.base.vcf.gz',
@@ -90,12 +101,18 @@ oth = mmread(f'{cellsnp_dir}/cellSNP.tag.OTH.mtx').tocsr()
 
 d_mask = demux_snps.index.isin(genotypes.index)
 g_mask = genotypes.index.isin(demux_snps.index)
+
 tmp_genos = genotypes[g_mask]
 tmp_demux = demux_snps[d_mask]
+
+ad = ad[d_mask]
+dp = dp[d_mask]
+oth = oth[d_mask]
 
 g_dup_mask = tmp_genos.index.duplicated()
 d_dup_mask = tmp_demux.index.duplicated()
 
+### probably easier way to get final ad/dp/oth but this works for now
 ad = ad[~d_dup_mask]
 dp = dp[~d_dup_mask]
 oth = oth[~d_dup_mask]
@@ -111,13 +128,14 @@ ad_rows = [ad.getrow(i) for i in range(n_snps)]
 dp_rows = [dp.getrow(i) for i in range(n_snps)]
 
 for donor in donors:
-  genotypes = [x.split(':')[0] for x in final_genos[donor]]
+  donor_genotypes = [x.split(':')[0] for x in final_genos[donor]]
   with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
     mtx_list = list(tqdm(executor.map(process_snp,
-                                      ad_rows, dp_rows, genotypes),
+                                      ad_rows, dp_rows, donor_genotypes),
                                       total=n_snps))
     consistent_mtx = vstack(mtx_list)
     mmwrite(f'{outdir}/{donor}.consistent.mtx', consistent_mtx)
+    subprocess.run([f'gzip -f {outdir}/{donor}.consistent.mtx'], shell=True)
 
 barcodes.to_csv(f'{outdir}/barcodes.tsv.gz', sep='\t',
         header=None, index=True)
@@ -125,6 +143,10 @@ barcodes.to_csv(f'{outdir}/barcodes.tsv.gz', sep='\t',
 mmwrite(f'{outdir}/cellSNP.tag.AD.mtx', ad)
 mmwrite(f'{outdir}/cellSNP.tag.DP.mtx', dp)
 mmwrite(f'{outdir}/cellSNP.tag.OTH.mtx', oth)
+
+subprocess.run([f'gzip -f {outdir}/cellSNP.tag.AD.mtx'], shell=True)
+subprocess.run([f'gzip -f {outdir}/cellSNP.tag.DP.mtx'], shell=True)
+subprocess.run([f'gzip -f {outdir}/cellSNP.tag.OTH.mtx'], shell=True)
 
 final_demux = final_demux.reset_index(drop=True)
 final_demux.to_csv(f'{outdir}/varcon.SNPs.vcf.gz',

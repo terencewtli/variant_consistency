@@ -24,7 +24,7 @@ parser.add_argument('-d', '--donors', type=str, required=True, \
 parser.add_argument('-o', '--outdir', type=str, required=True, \
         help='directory to store sparse matrices per individual')
 
-parser.add_argument('-t', '--threads', help='Number of threads', default=1)
+parser.add_argument('-t', '--threads', help='Number of threads', default=8)
 
 args = parser.parse_args()
 
@@ -115,9 +115,14 @@ n_donors = len(donors)
 barcodes = pd.read_csv(f'{indir}/barcodes.tsv.gz',
                        sep='\t',header=None,index_col=0)
 
-dp = mmread(f'{indir}/cellSNP.tag.DP.mtx').tocsr()
-consistent = [mmread(f'{indir}/{donor}.consistent.mtx').tocsr()
+# dp = mmread(f'{indir}/cellSNP.tag.DP.mtx').tocsr()
+# consistent = [mmread(f'{indir}/{donor}.consistent.mtx').tocsr()
+#               for donor in donors]
+
+dp = mmread(f'{indir}/cellSNP.tag.DP.mtx.gz').tocsr()
+consistent = [mmread(f'{indir}/{donor}.consistent.mtx.gz').tocsr()
               for donor in donors]
+
 inconsistent = [dp - mtx for mtx in consistent]
 
 bin_consistent = [binarize(x) for x in consistent]

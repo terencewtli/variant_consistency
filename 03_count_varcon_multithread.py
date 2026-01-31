@@ -38,6 +38,38 @@ donor_path = args.donors
 cov_thresh = int(args.cov_thresh)
 outdir = args.outdir
 
+### multithreading function
+
+def process_bc(i):
+    tmp_c1 = c1_indices[i]
+    tmp_c2 = c2_indices[i]
+    tmp_i1 = i1_indices[i]
+    tmp_i2 = i2_indices[i]
+
+    tmp_c1_counts = []
+    tmp_c2_counts = []
+    tmp_i1_counts = []
+    tmp_i2_counts = []
+
+    for j in range(n_donors):
+        c1 = vcf.iloc[tmp_c1[j]]
+        c2 = vcf.iloc[tmp_c2[j]]
+        i1 = vcf.iloc[tmp_i1[j]]
+        i2 = vcf.iloc[tmp_i2[j]]
+
+        c1_mask = c1['DP'] > cov_thresh
+        c2_mask = c2['DP'] > cov_thresh
+        i1_mask = i1['DP'] > cov_thresh
+        i2_mask = i2['DP'] > cov_thresh
+
+        tmp_c1_counts.append(np.sum(consistent[j][c1.index[c1_mask], i]))
+        tmp_c2_counts.append(np.sum(consistent[j][c2.index[c2_mask], i]))
+        tmp_i1_counts.append(np.sum(inconsistent[j][i1.index[i1_mask], i]))
+        tmp_i2_counts.append(np.sum(inconsistent[j][i2.index[i2_mask], i]))
+
+    return tmp_c1_counts, tmp_c2_counts, tmp_i1_counts, tmp_i2_counts
+
+
 ###### filter SNPs ######
 ### to do: incorporate other filters, such as R^2
 
@@ -51,17 +83,20 @@ n_donors = len(donors)
 barcodes = pd.Index(pd.read_csv(f'{indir}/barcodes.tsv.gz',
                        sep='\t',header=None,index_col=0).index)
 
-# dp = mmread(f'{indir}/cellSNP.tag.DP.mtx').tocsr()
 dp = mmread(f'{indir}/cellSNP.tag.DP.mtx.gz').tocsr()
 
 vcf = pd.read_csv(f'{indir}/varcon.SNPs.vcf.gz', sep='\t', header=0, index_col=0)
 vcf['chrom_pos'] = vcf.index
 vcf.reset_index(drop=True, inplace=True)
 vcf['DP'] = [int(x.split(';')[1].split('=')[1]) for x in vcf['INFO']]
+dp = vcf['DP'].to_numpy()
 
 consistent = [mmread(f'{indir}/{donor}.consistent.mtx.gz').tocsr()
               for donor in donors]
 inconsistent = [dp - mtx for mtx in consistent]
+
+n_barcodes = barcodes.shape[0]
+
 
 with open(f'{pkldir}/c1_dict.pkl', 'rb') as f:
     c1_dict = pickle.load(f)
@@ -87,43 +122,10 @@ i2_indices = [[i2_dict[x] for x in y] for y in bcs_donors]
 
 n_bcs = barcodes.shape[0]
 
-c1_counts = []
-c2_counts = []
-i1_counts = []
-i2_counts = []
+with ProcessPoolExecutor() as ex:
+    results = list(tqdm(ex.map(process_bc, range(n_bcs)),total=n_bcs))
 
-for i in tqdm(range(n_bcs), total=n_bcs):
-    tmp_c1 = c1_indices[i]
-    tmp_c2 = c2_indices[i]
-    tmp_i1 = i1_indices[i]
-    tmp_i2 = i2_indices[i]
-
-    tmp_c1_counts = []
-    tmp_c2_counts = []
-    tmp_i1_counts = []
-    tmp_i2_counts = []
-
-    for j in range(n_donors):
-        ### do some sort of variant filtering here
-        c1_mask = vcf.iloc[tmp_c1[j]]['DP'] > cov_thresh
-        c2_mask = vcf.iloc[tmp_c2[j]]['DP'] > cov_thresh
-        i1_mask = vcf.iloc[tmp_i1[j]]['DP'] > cov_thresh
-        i2_mask = vcf.iloc[tmp_i2[j]]['DP'] > cov_thresh
-
-        final_c1_mask = vcf.iloc[tmp_c1[j]][c1_mask].index
-        final_c2_mask = vcf.iloc[tmp_c2[j]][c2_mask].index
-        final_i1_mask = vcf.iloc[tmp_i1[j]][i1_mask].index
-        final_i2_mask = vcf.iloc[tmp_i2[j]][i2_mask].index
-
-        tmp_c1_counts.append(np.sum(consistent[j][final_c1_mask, i]))
-        tmp_c2_counts.append(np.sum(consistent[j][final_c2_mask, i]))
-        tmp_i1_counts.append(np.sum(inconsistent[j][final_i1_mask, i]))
-        tmp_i2_counts.append(np.sum(inconsistent[j][final_i2_mask, i]))
-
-    c1_counts.append(tmp_c1_counts)
-    c2_counts.append(tmp_c2_counts)
-    i1_counts.append(tmp_i1_counts)
-    i2_counts.append(tmp_i2_counts)
+c1_counts, c2_counts, i1_counts, i2_counts = map(list, zip(*results))
 
 c1_df = pd.DataFrame(c1_counts, columns=donors, index=barcodes)
 c2_df = pd.DataFrame(c2_counts, columns=donors, index=barcodes)
