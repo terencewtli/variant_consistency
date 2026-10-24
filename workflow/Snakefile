@@ -1,0 +1,84 @@
+### Variant consistency Snakemake workflow.
+### Adapted from the workflow written by Nadia Shaw (https://github.com/nadiashaw0405/my_var_con, March 2026): same layout,
+### config keys and cluster submission; steps 01-03 (01_con_counts_multithread.py, 02_get_con_indices.py,
+### 03_count_varcon_multithread.py) replaced by varcon_fast.py, which gives identical counts in one pass; cellsnp-lite now uses
+### the settings of the manuscript (--minMAF 0.1 --minCOUNT 1; --UMItag None for ATAC); optional per-method tables (step 04).
+### usage (repository root): snakemake --use-conda --cores 8 [--configfile config/config.yaml]
+
+import numpy as np
+
+configfile: "config/config.yaml"
+
+VCF = config["vcf"]
+DONORS = config["donors"]
+OUT = config["out_root"]
+PREFIX = config.get("out_prefix", "default_run")
+COVS = [str(c) for c in config.get("coverage", [0, 10, 20])]
+RUNS = config["runs"]
+CATS = ["c1", "c2", "i1", "i2"]
+
+
+def per_method_targets():
+    ### step 04 only for runs that list a demultiplexing table
+    return [f"{OUT}/{PREFIX}/{run}/03_per_method/inter_{cov}_varcon.csv"
+            for run in RUNS if RUNS[run].get("demux") for cov in COVS]
+
+
+rule all:
+    input:
+        expand("{out}/{prefix}/{run_name}/02_varcon/{cat}_df_{cov}.csv",
+               out=OUT, prefix=PREFIX, run_name=RUNS.keys(), cat=CATS, cov=COVS),
+        per_method_targets()
+
+
+### 00: allele counts per cell at the genotyped sites
+rule cellsnp_00:
+    input:
+        bam = lambda wc: RUNS[wc.run_name]["bam"],
+        barcodes = lambda wc: RUNS[wc.run_name]["barcodes"]
+    output:
+        dir = directory("{out}/{prefix}/{run_name}/00_cellsnp")
+    params:
+        ### ATAC has no UMIs
+        umi = lambda wc: "--UMItag None" if RUNS[wc.run_name].get("modality", "gex") == "atac" else "",
+        extra = config.get("cellsnp_params", "--minMAF 0.1 --minCOUNT 1")
+    log: "{out}/{prefix}/{run_name}/logs/00_cellsnp.log"
+    threads: 12
+    conda: "envs/cellsnp.yaml"
+    shell:
+        "cellsnp-lite -s {input.bam} -b {input.barcodes} -R {VCF} -O {output.dir} -p {threads} "
+        "{params.extra} {params.umi} > {log} 2>&1"
+
+
+### 01: variant consistency counts per cell and donor (replaces steps 01-03)
+rule varcon_fast_01:
+    input:
+        dir_00 = "{out}/{prefix}/{run_name}/00_cellsnp"
+    output:
+        expand("{{out}}/{{prefix}}/{{run_name}}/02_varcon/{cat}_df_{cov}.csv", cat=CATS, cov=COVS)
+    params:
+        covs = ",".join(COVS),
+        outdir = "{out}/{prefix}/{run_name}/02_varcon"
+    log: "{out}/{prefix}/{run_name}/logs/01_varcon.log"
+    threads: 1
+    resources: mem_mb = 32000
+    conda: "envs/var_con.yaml"
+    shell:
+        "python varcon_fast.py -c {input.dir_00} -i {VCF} -d {DONORS} -o {params.outdir} --covs {params.covs} > {log} 2>&1"
+
+
+### 02 (optional): per-method tables, counts at each droplet's assigned donor (04_organize_varcon.py)
+rule per_method_02:
+    input:
+        counts = expand("{{out}}/{{prefix}}/{{run_name}}/02_varcon/{cat}_df_{{cov}}.csv", cat=CATS),
+        demux = lambda wc: RUNS[wc.run_name]["demux"]
+    output:
+        "{out}/{prefix}/{run_name}/03_per_method/inter_{cov}_varcon.csv"
+    params:
+        indir = "{out}/{prefix}/{run_name}/02_varcon",
+        outdir = "{out}/{prefix}/{run_name}/03_per_method"
+    log: "{out}/{prefix}/{run_name}/logs/02_per_method_{cov}.log"
+    conda: "envs/var_con.yaml"
+    shell:
+        "mkdir -p {params.outdir} && python 04_organize_varcon.py -i {params.indir} -d {DONORS} -c {wildcards.cov} "
+        "-v {input.demux} -o {params.outdir} > {log} 2>&1"

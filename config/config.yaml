@@ -1,0 +1,26 @@
+# Variant consistency workflow configuration (adapted from github.com/nadiashaw0405/my_var_con)
+
+# 1. Reference genotypes of the multiplexed donors and the donor list (one ID per line, as in the VCF header)
+vcf: "/path/to/genotypes.vcf.gz"
+donors: "/path/to/donors.txt"
+
+# 2. Libraries: BAM, filtered barcodes, modality (gex or atac) and, optionally, a demultiplexing table
+#    (tab-separated; rows = barcodes, one column per method; values = donor ID, "doublet" or "unassigned")
+runs:
+  run_name_01_gex:
+    bam: "/path/to/run_name_01/outs/gex_possorted_bam.bam"
+    barcodes: "/path/to/run_name_01/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"
+    modality: "gex"
+    demux: "/path/to/run_name_01_gex_demux.tsv"
+  run_name_01_atac:
+    bam: "/path/to/run_name_01/outs/atac_possorted_bam.bam"
+    barcodes: "/path/to/run_name_01/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"
+    modality: "atac"
+
+# 3. Output location
+out_root: "var_con_output"
+out_prefix: "run_v1"
+
+# 4. Parameters: experiment-wide SNP depth thresholds (SNPs kept if depth > threshold) and cellsnp-lite filters
+coverage: [0, 10, 20]
+cellsnp_params: "--minMAF 0.1 --minCOUNT 1"
